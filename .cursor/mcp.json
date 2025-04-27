@@ -1,0 +1,11 @@
+{
+    "mcpServers": {
+        "shrimp-task-manager": {
+            "command": "npx",
+            "args": ["-y", "mcp-shrimp-task-manager"],
+            "env": {
+              "DATA_DIR": "/home/jaco/SecondBrain/1-Projects/GoProjects/Development/demo-project/task-manager-data"
+            }
+          }
+    }
+}
