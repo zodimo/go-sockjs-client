@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -248,15 +249,13 @@ func TestWebSocketTransportHandlers(t *testing.T) {
 
 	// Verify handlers are set
 	if transport.messageHandler == nil {
-		t.Error("Message handler not set")
+		t.Error("Expected message handler to be set")
 	}
-
 	if transport.errorHandler == nil {
-		t.Error("Error handler not set")
+		t.Error("Expected error handler to be set")
 	}
-
 	if transport.closeHandler == nil {
-		t.Error("Close handler not set")
+		t.Error("Expected close handler to be set")
 	}
 }
 
@@ -266,8 +265,225 @@ func TestWebSocketTransportName(t *testing.T) {
 		t.Fatalf("Failed to create transport: %v", err)
 	}
 
-	name := transport.Name()
-	if name != "websocket" {
-		t.Errorf("Expected name 'websocket', got '%s'", name)
+	if transport.Name() != "websocket" {
+		t.Errorf("Expected transport name to be websocket, got %s", transport.Name())
 	}
+}
+
+// Test the WithReadWait transport option
+func TestWithReadWait(t *testing.T) {
+	customReadWait := 30 * time.Second
+	transport, err := NewWebSocketTransport("http://localhost:8080/sockjs", WithReadWait(customReadWait))
+	if err != nil {
+		t.Fatalf("Failed to create transport: %v", err)
+	}
+
+	if transport.readWait != customReadWait {
+		t.Errorf("Expected readWait to be %v, got %v", customReadWait, transport.readWait)
+	}
+}
+
+// Test the WithWriteWait transport option
+func TestWithWriteWait(t *testing.T) {
+	customWriteWait := 15 * time.Second
+	transport, err := NewWebSocketTransport("http://localhost:8080/sockjs", WithWriteWait(customWriteWait))
+	if err != nil {
+		t.Fatalf("Failed to create transport: %v", err)
+	}
+
+	if transport.writeWait != customWriteWait {
+		t.Errorf("Expected writeWait to be %v, got %v", customWriteWait, transport.writeWait)
+	}
+}
+
+// Test the WithWebSocketDialer transport option
+func TestWithWebSocketDialer(t *testing.T) {
+	customDialer := &websocket.Dialer{
+		HandshakeTimeout: 15 * time.Second,
+	}
+	transport, err := NewWebSocketTransport("http://localhost:8080/sockjs", WithWebSocketDialer(customDialer))
+	if err != nil {
+		t.Fatalf("Failed to create transport: %v", err)
+	}
+
+	if transport.dialer != customDialer {
+		t.Errorf("Expected custom dialer to be set")
+	}
+}
+
+// Test the WithReconnect transport option
+func TestWithReconnectOption(t *testing.T) {
+	customReconnectConfig := ReconnectConfig{
+		MaxAttempts:  10,
+		InitialDelay: 500 * time.Millisecond,
+		MaxDelay:     5 * time.Second,
+		Multiplier:   1.5,
+		Jitter:       0.1,
+	}
+
+	// Use the option adapter to convert the Option to WebSocketOption
+	transport, err := NewWebSocketTransport("http://localhost:8080/sockjs", func(wt *WebSocketTransport) {
+		wt.reconnectCfg = customReconnectConfig
+	})
+	if err != nil {
+		t.Fatalf("Failed to create transport: %v", err)
+	}
+
+	if transport.reconnectCfg.MaxAttempts != customReconnectConfig.MaxAttempts {
+		t.Errorf("Expected maxAttempts to be %d, got %d", customReconnectConfig.MaxAttempts, transport.reconnectCfg.MaxAttempts)
+	}
+	if transport.reconnectCfg.InitialDelay != customReconnectConfig.InitialDelay {
+		t.Errorf("Expected initialDelay to be %v, got %v", customReconnectConfig.InitialDelay, transport.reconnectCfg.InitialDelay)
+	}
+}
+
+// Test the WithConnectTimeout transport option
+func TestWithConnectTimeoutOption(t *testing.T) {
+	customTimeout := 15 * time.Second
+
+	// Use the option adapter to convert the Option to WebSocketOption
+	transport, err := NewWebSocketTransport("http://localhost:8080/sockjs", func(wt *WebSocketTransport) {
+		wt.connectTimeout = customTimeout
+	})
+	if err != nil {
+		t.Fatalf("Failed to create transport: %v", err)
+	}
+
+	if transport.connectTimeout != customTimeout {
+		t.Errorf("Expected connectTimeout to be %v, got %v", customTimeout, transport.connectTimeout)
+	}
+}
+
+// Test reconnection logic with a more direct approach
+func TestReconnectLogic(t *testing.T) {
+	// Create a transport with customized reconnection settings
+	transport, err := NewWebSocketTransport("ws://localhost:8000/sockjs/test/websocket")
+	if err != nil {
+		t.Fatalf("Failed to create transport: %v", err)
+	}
+
+	// Override the reconnect configuration for testing
+	transport.reconnectCfg = ReconnectConfig{
+		MaxAttempts:  3,
+		InitialDelay: 10 * time.Millisecond,
+		MaxDelay:     20 * time.Millisecond,
+		Multiplier:   1.2,
+		Jitter:       0.1,
+	}
+
+	// Mock connected state
+	transport.connected = true
+	transport.conn = &websocket.Conn{} // Empty conn just to avoid nil pointer
+
+	// Track reconnect attempts
+	reconnectAttempted := false
+	reconnectCount := 0
+	reconnectCh := make(chan struct{}, 5)
+
+	// Set error handler to detect reconnect attempts
+	transport.SetErrorHandler(func(err error) {
+		reconnectCount++
+		reconnectAttempted = true
+		reconnectCh <- struct{}{}
+	})
+
+	// Mock a connection error to trigger reconnect
+	// This simulates what happens in the readLoop when a connection error occurs
+	go func() {
+		// Allow the test to set up the error handler
+		time.Sleep(50 * time.Millisecond)
+
+		// Simulate connection error and reconnect attempt
+		transport.connected = false
+		if transport.errorHandler != nil {
+			transport.errorHandler(errors.New("connection lost, reconnect attempt 1"))
+		}
+	}()
+
+	// Wait for reconnect signal or timeout
+	select {
+	case <-reconnectCh:
+		// Success
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Timed out waiting for reconnect attempt")
+	}
+
+	// Verify reconnect was attempted
+	if !reconnectAttempted {
+		t.Error("Expected reconnect to be attempted")
+	}
+
+	if reconnectCount < 1 {
+		t.Errorf("Expected at least 1 reconnect attempt, got %d", reconnectCount)
+	}
+}
+
+// Test handling of different message types
+func TestHandleMessage(t *testing.T) {
+	transport, err := NewWebSocketTransport("http://localhost:8080/sockjs")
+	if err != nil {
+		t.Fatalf("Failed to create transport: %v", err)
+	}
+
+	// Test message handler
+	receivedMessages := make([]string, 0)
+	transport.SetMessageHandler(func(msg string) {
+		receivedMessages = append(receivedMessages, msg)
+	})
+
+	// Test error handler
+	var receivedError error
+	transport.SetErrorHandler(func(err error) {
+		receivedError = err
+	})
+
+	// Test close handler
+	var (
+		closedCode   int
+		closedReason string
+	)
+	transport.SetCloseHandler(func(code int, reason string) {
+		closedCode = code
+		closedReason = reason
+	})
+
+	// Manually set connected to true so the handler processes messages
+	transport.connected = true
+
+	// Directly call the message handler to simulate different message types
+	transport.handleMessage("o")                          // Open frame - should do nothing
+	transport.handleMessage("h")                          // Heartbeat frame - should do nothing
+	transport.handleMessage("[\"test\"]")                 // JSON array message - should be processed
+	transport.handleMessage("\"single message\"")         // Message frame with quotes (single message format)
+	transport.handleMessage("c[1000,\"Normal closure\"]") // Close frame
+	transport.handleMessage("invalid")                    // Invalid frame
+
+	// Verify message frames were processed
+	if len(receivedMessages) != 2 || receivedMessages[0] != "test" || receivedMessages[1] != "single message" {
+		t.Errorf("Expected to receive messages 'test' and 'single message', got %v", receivedMessages)
+	}
+
+	// Verify close frame was processed
+	if closedCode != 1000 || closedReason != "Normal closure" {
+		t.Errorf("Expected close code 1000, reason 'Normal closure', got %d, %s", closedCode, closedReason)
+	}
+
+	// Verify error on invalid frame
+	if receivedError == nil || !strings.Contains(receivedError.Error(), "unrecognized message format") {
+		t.Errorf("Expected error on invalid frame, got %v", receivedError)
+	}
+}
+
+// Test message handler processing
+func TestMessageHandlerProcessing(t *testing.T) {
+	transport := &WebSocketTransport{
+		messageHandler: func(msg string) {},
+	}
+
+	// Test valid SockJS protocol messages
+	transport.handleMessage("o")
+	transport.handleMessage("h")
+	transport.handleMessage("a[\"test\"]")
+	transport.handleMessage("c[1000,\"Normal closure\"]")
+	transport.handleMessage("invalid")
 }

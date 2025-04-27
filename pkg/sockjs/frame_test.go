@@ -373,3 +373,293 @@ func TestExtractMessages(t *testing.T) {
 		})
 	}
 }
+
+// Tests for frame checking functions
+func TestIsOpenFrame(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{
+			name: "open frame",
+			data: []byte("o"),
+			want: true,
+		},
+		{
+			name: "not open frame",
+			data: []byte("h"),
+			want: false,
+		},
+		{
+			name: "empty data",
+			data: []byte{},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsOpenFrame(tt.data); got != tt.want {
+				t.Errorf("IsOpenFrame() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsHeartbeatFrame(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{
+			name: "heartbeat frame",
+			data: []byte("h"),
+			want: true,
+		},
+		{
+			name: "not heartbeat frame",
+			data: []byte("o"),
+			want: false,
+		},
+		{
+			name: "empty data",
+			data: []byte{},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsHeartbeatFrame(tt.data); got != tt.want {
+				t.Errorf("IsHeartbeatFrame() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsMessageFrame(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{
+			name: "message frame",
+			data: []byte("a[\"message\"]"),
+			want: true,
+		},
+		{
+			name: "not message frame",
+			data: []byte("h"),
+			want: false,
+		},
+		{
+			name: "empty data",
+			data: []byte{},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsMessageFrame(tt.data); got != tt.want {
+				t.Errorf("IsMessageFrame() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsSingleMessageFrame(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{
+			name: "single message frame",
+			data: []byte("m\"message\""),
+			want: true,
+		},
+		{
+			name: "not single message frame",
+			data: []byte("a[\"message\"]"),
+			want: false,
+		},
+		{
+			name: "empty data",
+			data: []byte{},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsSingleMessageFrame(tt.data); got != tt.want {
+				t.Errorf("IsSingleMessageFrame() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsCloseFrame(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{
+			name: "close frame",
+			data: []byte("c[1000,\"Normal closure\"]"),
+			want: true,
+		},
+		{
+			name: "not close frame",
+			data: []byte("h"),
+			want: false,
+		},
+		{
+			name: "empty data",
+			data: []byte{},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsCloseFrame(tt.data); got != tt.want {
+				t.Errorf("IsCloseFrame() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Tests for encoding functions
+func TestEncodeOpenFrame(t *testing.T) {
+	encoded := EncodeOpenFrame()
+	if string(encoded) != "o" {
+		t.Errorf("EncodeOpenFrame() = %s, want o", encoded)
+	}
+}
+
+func TestEncodeHeartbeatFrame(t *testing.T) {
+	encoded := EncodeHeartbeatFrame()
+	if string(encoded) != "h" {
+		t.Errorf("EncodeHeartbeatFrame() = %s, want h", encoded)
+	}
+}
+
+func TestEncodeSingleMessageFrame(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		wantErr bool
+	}{
+		{
+			name:    "normal message",
+			message: "Hello",
+			wantErr: false,
+		},
+		{
+			name:    "empty message",
+			message: "",
+			wantErr: false,
+		},
+		{
+			name:    "message with quotes",
+			message: "Hello \"World\"",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := EncodeSingleMessageFrame(tt.message)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("EncodeSingleMessageFrame() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if !tt.wantErr {
+				// Check prefix
+				if encoded[0] != 'm' {
+					t.Errorf("EncodeSingleMessageFrame() prefix = %c, want m", encoded[0])
+				}
+
+				// Parse the JSON part
+				var decoded string
+				err = json.Unmarshal(encoded[1:], &decoded)
+				if err != nil {
+					t.Errorf("EncodeSingleMessageFrame() invalid JSON: %v", err)
+				}
+
+				if decoded != tt.message {
+					t.Errorf("EncodeSingleMessageFrame() decoded = %s, want %s", decoded, tt.message)
+				}
+			}
+		})
+	}
+}
+
+func TestParseFrameString(t *testing.T) {
+	tests := []struct {
+		name          string
+		data          string
+		wantFrameType byte
+		wantPayload   string
+		wantErr       bool
+	}{
+		{
+			name:          "open frame",
+			data:          "o",
+			wantFrameType: 'o',
+			wantPayload:   "",
+			wantErr:       false,
+		},
+		{
+			name:          "heartbeat frame",
+			data:          "h",
+			wantFrameType: 'h',
+			wantPayload:   "",
+			wantErr:       false,
+		},
+		{
+			name:          "close frame",
+			data:          "c[3000,\"Go away!\"]",
+			wantFrameType: 'c',
+			wantPayload:   "[3000,\"Go away!\"]",
+			wantErr:       false,
+		},
+		{
+			name:          "message frame",
+			data:          "a[\"Hello, world!\"]",
+			wantFrameType: 'a',
+			wantPayload:   "[\"Hello, world!\"]",
+			wantErr:       false,
+		},
+		{
+			name:          "empty frame",
+			data:          "",
+			wantFrameType: 0,
+			wantPayload:   "",
+			wantErr:       true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotFrameType, gotPayload, err := ParseFrameString(tt.data)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseFrameString() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if gotFrameType != tt.wantFrameType {
+				t.Errorf("ParseFrameString() gotFrameType = %v, want %v", gotFrameType, tt.wantFrameType)
+			}
+			if gotPayload != tt.wantPayload {
+				t.Errorf("ParseFrameString() gotPayload = %v, want %v", gotPayload, tt.wantPayload)
+			}
+		})
+	}
+}
