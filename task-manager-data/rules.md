@@ -93,6 +93,13 @@
 - Rebase feature branches against main before merge
 - Delete branches after merge
 
+### Checkpointing and Safe State
+
+- Create regular, restorable checkpoints in git history by making atomic, self-contained commits and after completion of a task
+- Ensure each commit and PR leaves the repository in a buildable and testable state
+- Use descriptive PR titles and commit messages to clarify the purpose of each checkpoint
+- Tag significant milestones or releases with annotated git tags
+
 ### Code Review
 
 - All code must be reviewed before merging

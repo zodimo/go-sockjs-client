@@ -4,7 +4,8 @@
             "command": "npx",
             "args": ["-y", "mcp-shrimp-task-manager"],
             "env": {
-              "DATA_DIR": "/home/jaco/SecondBrain/1-Projects/GoProjects/Development/demo-project/task-manager-data"
+              "DATA_DIR": "/home/jaco/SecondBrain/1-Projects/GoProjects/Development/go-sockjs-client/task-manager-data",
+              "TEMPLATES_USE":"en"
             }
           }
     }
