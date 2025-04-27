@@ -1,0 +1,25 @@
+# Node.js dependencies
+node_modules/
+package-lock.json
+npm-debug.log*
+
+# Server logs
+server.log
+*.log
+
+# Test artifacts
+/test-results/
+
+# Temporary files
+.tmp/
+*.tmp
+tmp*
+
+# macOS system files
+.DS_Store
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo 

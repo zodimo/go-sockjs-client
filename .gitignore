@@ -1,0 +1,43 @@
+# Go specific
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+
+# Dependencies
+node_modules/
+vendor/
+
+# Binaries
+bin/
+build/
+dist/
+
+# SockJS integration test artifacts
+server.log
+*.log
+cmd/integration_test/node_modules/
+cmd/integration_test/package-lock.json
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Build and test outputs
+coverage.txt
+profile.out
+/test-results/
+*.cover
+
+# Temporary files
+.tmp/
+tmp/
+*.tmp
+tmp*

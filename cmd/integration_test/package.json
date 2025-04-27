@@ -1,0 +1,14 @@
+{
+  "name": "sockjs-client-integration-test",
+  "version": "1.0.0",
+  "description": "Integration test server for SockJS client",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "./run_test.sh"
+  },
+  "dependencies": {
+    "sockjs": "^0.3.24",
+    "colors": "^1.4.0"
+  }
+}
