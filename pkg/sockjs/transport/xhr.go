@@ -30,6 +30,7 @@ type XHRTransport struct {
 	pollCancel     context.CancelFunc
 	mutex          sync.Mutex
 	pollInterval   time.Duration
+	disablePolling bool // Used for testing to disable automatic polling start
 }
 
 // NewXHRTransport creates a new XHR transport instance.
@@ -126,8 +127,13 @@ func (x *XHRTransport) Connect(ctx context.Context) error {
 	// Mark as connected
 	x.connected = true
 
-	// Start polling
-	x.startPolling(ctx)
+	// Start polling unless disabled for testing
+	if !x.disablePolling {
+		// Explicitly release the mutex before calling startPolling
+		x.mutex.Unlock()
+		x.startPolling(ctx)
+		x.mutex.Lock() // Re-acquire the mutex before returning
+	}
 
 	return nil
 }

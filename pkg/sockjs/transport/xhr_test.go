@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -73,27 +74,172 @@ func setupXHRTestServer(t *testing.T, handler func(w http.ResponseWriter, r *htt
 }
 
 func TestXHRTransportConnect(t *testing.T) {
-	// Skip this test explicitly since it's causing issues
-	t.Skip("Skip test - known issue with concurrency that needs deeper investigation")
-
-	// Instead we test the key functionality with a very simple test
-	// Create and validate a transport without any network operations
+	// Create a transport with a mocked HTTP client to avoid actual HTTP connections
 	transport, err := NewXHRTransport("http://localhost:12345/sockjs", nil)
 	if err != nil {
 		t.Fatalf("Failed to create transport: %v", err)
 	}
 
-	// Verify basic properties
+	// Disable polling for testing to avoid goroutine leaks and deadlocks
+	transport.disablePolling = true
+
+	// Override the HTTP client with a mock that returns a success response
+	transport.client = &http.Client{
+		Transport: &mockRoundTripper{
+			RoundTripFn: func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: 200,
+					Body:       io.NopCloser(strings.NewReader("o")),
+					Header:     make(http.Header),
+				}, nil
+			},
+		},
+	}
+
+	// Set error handler for debugging
+	errorChannel := make(chan error, 1)
+	transport.SetErrorHandler(func(err error) {
+		select {
+		case errorChannel <- err:
+		default:
+			t.Logf("Error channel full: %v", err)
+		}
+	})
+
+	// Set a message handler to ensure the interface is complete
+	transport.SetMessageHandler(func(msg string) {
+		t.Logf("Received message: %s", msg)
+	})
+
+	// Set a close handler to ensure the interface is complete
+	transport.SetCloseHandler(func(code int, reason string) {
+		t.Logf("Connection closed: %d, %s", code, reason)
+	})
+
+	// Create a context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	// Create test cases for Connect
+	testCases := []struct {
+		name           string
+		setupTransport func()
+		expectError    bool
+		errorContains  string
+	}{
+		{
+			name: "successful connect",
+			setupTransport: func() {
+				transport.connected = false
+				transport.client = &http.Client{
+					Transport: &mockRoundTripper{
+						RoundTripFn: func(req *http.Request) (*http.Response, error) {
+							return &http.Response{
+								StatusCode: 200,
+								Body:       io.NopCloser(strings.NewReader("o")),
+								Header:     make(http.Header),
+							}, nil
+						},
+					},
+				}
+			},
+			expectError: false,
+		},
+		{
+			name: "already connected",
+			setupTransport: func() {
+				transport.connected = true
+			},
+			expectError: false,
+		},
+		{
+			name: "http error",
+			setupTransport: func() {
+				transport.connected = false
+				transport.client = &http.Client{
+					Transport: &mockRoundTripper{
+						RoundTripFn: func(req *http.Request) (*http.Response, error) {
+							return &http.Response{
+								StatusCode: 500,
+								Body:       io.NopCloser(strings.NewReader("error")),
+								Header:     make(http.Header),
+							}, nil
+						},
+					},
+				}
+			},
+			expectError:   true,
+			errorContains: "500",
+		},
+		{
+			name: "network error",
+			setupTransport: func() {
+				transport.connected = false
+				transport.client = &http.Client{
+					Transport: &mockRoundTripper{
+						RoundTripFn: func(req *http.Request) (*http.Response, error) {
+							return nil, fmt.Errorf("simulated network error")
+						},
+					},
+				}
+			},
+			expectError:   true,
+			errorContains: "simulated network error",
+		},
+		{
+			name: "invalid response",
+			setupTransport: func() {
+				transport.connected = false
+				transport.client = &http.Client{
+					Transport: &mockRoundTripper{
+						RoundTripFn: func(req *http.Request) (*http.Response, error) {
+							return &http.Response{
+								StatusCode: 200,
+								Body:       io.NopCloser(strings.NewReader("invalid")),
+								Header:     make(http.Header),
+							}, nil
+						},
+					},
+				}
+			},
+			expectError:   true,
+			errorContains: "unexpected initial response",
+		},
+	}
+
+	// Run the test cases
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Set up transport for this test case
+			tc.setupTransport()
+
+			// Now connect
+			err = transport.Connect(ctx)
+
+			// Check if error status matches expectation
+			if tc.expectError && err == nil {
+				t.Errorf("Expected error but got nil")
+			} else if !tc.expectError && err != nil {
+				t.Errorf("Expected no error but got: %v", err)
+			}
+
+			// Check error message if applicable
+			if tc.expectError && err != nil && tc.errorContains != "" {
+				if !strings.Contains(err.Error(), tc.errorContains) {
+					t.Errorf("Expected error containing '%s', got: %v", tc.errorContains, err)
+				}
+			}
+		})
+	}
+
+	// Verify the base properties are always set
 	if transport.sessionID == "" {
 		t.Error("Session ID should be set")
 	}
 
 	if transport.baseURL == "" || transport.sendURL == "" || transport.receiveURL == "" {
-		t.Error("URLs should be set up")
+		t.Error("URLs should be set correctly")
 	}
-
-	// Since we know from the TestXHRTransportConnectStable test that the
-	// important functionality is working, we can skip the actual connection test
 }
 
 // mockRoundTripper is a mock http.RoundTripper for testing
@@ -577,11 +723,128 @@ func TestXHRTransportConcurrentMessageHandling(t *testing.T) {
 }
 
 func TestXHRTransportThreadSafety(t *testing.T) {
-	// Skip the test due to concurrent map issues that need to be fixed
-	t.Skip("Skipping test due to concurrent map access issues - needs to be fixed")
+	// Create a transport instance with a simulated server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/xhr") {
+			w.Header().Set("Content-Type", "application/javascript; charset=UTF-8")
+			w.Write([]byte("o"))
+			return
+		} else if strings.HasSuffix(r.URL.Path, "/xhr_send") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}))
+	defer server.Close()
 
-	// Original test code remains below...
-	// ... existing code ...
+	transport, err := NewXHRTransport(server.URL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create transport: %v", err)
+	}
+
+	// Override polling behavior to avoid actual network calls
+	transport.polling = true
+	transport.pollCancel = func() {}
+	transport.connected = true // Simulate connected state
+
+	// Create channels to collect results and synchronize tests
+	messagesChan := make(chan string, 100)
+	errorsChan := make(chan error, 100)
+	wg := sync.WaitGroup{}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	// Set up thread-safe handlers
+	var messageHandlerMutex sync.Mutex
+	receivedMessages := []string{}
+
+	transport.SetMessageHandler(func(msg string) {
+		messageHandlerMutex.Lock()
+		defer messageHandlerMutex.Unlock()
+		receivedMessages = append(receivedMessages, msg)
+		messagesChan <- msg
+	})
+
+	transport.SetErrorHandler(func(err error) {
+		errorsChan <- err
+	})
+
+	// Test concurrent message handling
+	wg.Add(10)
+	for i := 0; i < 10; i++ {
+		go func(index int) {
+			defer wg.Done()
+			// Simulate receiving different messages concurrently
+			msg := fmt.Sprintf(`a["message%d"]`, index)
+			transport.handleMessage(msg)
+		}(i)
+	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
+
+	// Count received messages (should be 10)
+	close(messagesChan)
+	messageCount := 0
+	for range messagesChan {
+		messageCount++
+	}
+
+	if messageCount != 10 {
+		t.Errorf("Expected 10 messages to be processed, got %d", messageCount)
+	}
+
+	// Test concurrent sending with a mutex to protect the transport
+	wg.Add(5)
+	sendErrors := []error{}
+	var sendErrorsMutex sync.Mutex
+
+	for i := 0; i < 5; i++ {
+		go func(index int) {
+			defer wg.Done()
+			// We'll manually invoke handleMessage instead of using Send
+			// to avoid making actual HTTP requests
+			msg := fmt.Sprintf("message%d", index)
+			err := transport.Send(ctx, msg)
+			if err != nil {
+				sendErrorsMutex.Lock()
+				sendErrors = append(sendErrors, err)
+				sendErrorsMutex.Unlock()
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Verify no errors during concurrent sends
+	sendErrorsMutex.Lock()
+	errorCount := len(sendErrors)
+	sendErrorsMutex.Unlock()
+
+	if errorCount > 0 {
+		t.Errorf("Expected no errors during concurrent sends, got %d errors", errorCount)
+		for i, err := range sendErrors {
+			t.Errorf("Error %d: %v", i, err)
+		}
+	}
+
+	// Test concurrent handler setting
+	wg.Add(5)
+	for i := 0; i < 5; i++ {
+		go func(index int) {
+			defer wg.Done()
+			transport.SetMessageHandler(func(msg string) {
+				// Just a dummy handler for testing thread safety
+				messagesChan <- fmt.Sprintf("handler%d: %s", index, msg)
+			})
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Clean up
+	if transport.pollCancel != nil {
+		transport.pollCancel()
+	}
 }
 
 func TestXHRTransportConnectStable(t *testing.T) {
@@ -605,12 +868,8 @@ func TestXHRTransportConnectStable(t *testing.T) {
 		t.Fatalf("Failed to create transport: %v", err)
 	}
 
-	// Override the startPolling function to avoid starting goroutines
-	// This is done by making the transport's polling field true,
-	// which will prevent the startPolling function from starting
-	// new goroutines when Connect is called
-	transport.polling = true
-	transport.pollCancel = func() {} // Dummy function for test
+	// Disable automatic polling for testing
+	transport.disablePolling = true
 
 	// We also provide a custom client that only simulates the connection
 	// request and doesn't actually make HTTP calls, to avoid any network issues
@@ -720,17 +979,183 @@ func TestXHRTransportConnectStable(t *testing.T) {
 	if !strings.Contains(err.Error(), "simulated network error") {
 		t.Errorf("Expected network error, got: %v", err)
 	}
-
-	// Make sure to clean up any polling that might have started despite our precautions
-	if transport.pollCancel != nil {
-		transport.pollCancel()
-	}
 }
 
 func TestXHRTransportConnectComprehensive(t *testing.T) {
-	// Skip the test
-	t.Skip("Skipping comprehensive test due to timeout issues - needs more investigation")
+	// Create a transport with basic configuration
+	transport, err := NewXHRTransport("http://localhost:12345/sockjs", nil)
+	if err != nil {
+		t.Fatalf("Failed to create transport: %v", err)
+	}
 
-	// Original test code remains below...
-	// ... existing code ...
+	// Disable automatic polling for testing
+	transport.disablePolling = true
+
+	// Set up channels to collect events
+	messagesChan := make(chan string, 10)
+	errorsChan := make(chan error, 10)
+	closeChan := make(chan struct{}, 1)
+
+	// Set up handlers
+	transport.SetMessageHandler(func(msg string) {
+		t.Logf("Message handler received: %s", msg)
+		messagesChan <- msg
+	})
+
+	transport.SetErrorHandler(func(err error) {
+		t.Logf("Error handler received: %v", err)
+		errorsChan <- err
+	})
+
+	transport.SetCloseHandler(func(code int, reason string) {
+		t.Logf("Close handler received: %d, %s", code, reason)
+		closeChan <- struct{}{}
+	})
+
+	// Set up a controlled test sequence - the mock client will respond with different
+	// responses based on the request count and URL pattern
+	requestCount := 0
+
+	// Map to track requests to different endpoints
+	pollRequestCount := 0
+
+	transport.client = &http.Client{
+		Transport: &mockRoundTripper{
+			RoundTripFn: func(req *http.Request) (*http.Response, error) {
+				// Keep track of request count
+				requestCount++
+				t.Logf("Request #%d to URL: %s", requestCount, req.URL.String())
+
+				// Handle initial connection request (xhr)
+				if strings.HasSuffix(req.URL.Path, "/xhr") {
+					// First xhr request is the connection request
+					if pollRequestCount == 0 {
+						pollRequestCount++
+						t.Logf("Returning open frame 'o' for initial connect")
+						return &http.Response{
+							StatusCode: 200,
+							Body:       io.NopCloser(strings.NewReader("o")),
+							Header:     make(http.Header),
+						}, nil
+					}
+
+					// Second xhr request is the first poll - return message
+					if pollRequestCount == 1 {
+						pollRequestCount++
+						t.Logf("Returning message frame 'a[\"hello world\"]' for first poll")
+						return &http.Response{
+							StatusCode: 200,
+							Body:       io.NopCloser(strings.NewReader(`a["hello world"]`)),
+							Header:     make(http.Header),
+						}, nil
+					}
+
+					// Third xhr request is the second poll - return close frame
+					if pollRequestCount == 2 {
+						pollRequestCount++
+						t.Logf("Returning close frame 'c[1000,\"Normal closure\"]' for second poll")
+						return &http.Response{
+							StatusCode: 200,
+							Body:       io.NopCloser(strings.NewReader(`c[1000,"Normal closure"]`)),
+							Header:     make(http.Header),
+						}, nil
+					}
+
+					// Any further xhr requests - return heartbeat
+					t.Logf("Returning heartbeat 'h' for subsequent poll")
+					return &http.Response{
+						StatusCode: 200,
+						Body:       io.NopCloser(strings.NewReader("h")),
+						Header:     make(http.Header),
+					}, nil
+				}
+
+				// Handle send request (xhr_send)
+				if strings.HasSuffix(req.URL.Path, "/xhr_send") {
+					body, _ := io.ReadAll(req.Body)
+					t.Logf("Received send request with body: %s", string(body))
+					return &http.Response{
+						StatusCode: 204,
+						Body:       io.NopCloser(strings.NewReader("")),
+						Header:     make(http.Header),
+					}, nil
+				}
+
+				// Unknown endpoint
+				t.Logf("Unknown endpoint requested: %s", req.URL.Path)
+				return &http.Response{
+					StatusCode: 404,
+					Body:       io.NopCloser(strings.NewReader("Not found")),
+					Header:     make(http.Header),
+				}, nil
+			},
+		},
+	}
+
+	// Create a context with timeout for the test
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	// Connect (without starting real polling)
+	t.Log("Connecting...")
+	err = transport.Connect(ctx)
+	if err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+
+	if !transport.connected {
+		t.Error("Transport should be connected")
+	}
+
+	// Send a message
+	t.Log("Sending test message...")
+	err = transport.Send(ctx, "test message")
+	if err != nil {
+		t.Errorf("Send failed: %v", err)
+	}
+
+	// Manually invoke poll to simulate receiving messages
+	// First poll - should receive a message
+	t.Log("Starting first poll - expecting message")
+	err = transport.poll(ctx)
+	if err != nil {
+		t.Errorf("First poll failed: %v", err)
+	}
+
+	// Check for received message with longer timeout
+	t.Log("Waiting for message")
+	select {
+	case msg := <-messagesChan:
+		t.Logf("Received message: %s", msg)
+		if msg != "hello world" {
+			t.Errorf("Expected message 'hello world', got '%s'", msg)
+		}
+	case err := <-errorsChan:
+		t.Errorf("Received error instead of message: %v", err)
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Did not receive expected message")
+	}
+
+	// Second poll - should receive a close frame
+	t.Log("Starting second poll - expecting close frame")
+	err = transport.poll(ctx)
+	if err != nil {
+		t.Errorf("Second poll failed: %v", err)
+	}
+
+	// Check for close event
+	t.Log("Waiting for close event")
+	select {
+	case <-closeChan:
+		t.Log("Received close event as expected")
+	case err := <-errorsChan:
+		t.Errorf("Received error instead of close: %v", err)
+	case <-time.After(100 * time.Millisecond):
+		t.Error("Did not receive close event")
+	}
+
+	// Verify final state
+	if transport.connected {
+		t.Error("Transport should be disconnected after close frame")
+	}
 }

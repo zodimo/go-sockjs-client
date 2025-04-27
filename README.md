@@ -42,7 +42,7 @@ MIT
 
 The project includes comprehensive tests for the SockJS client implementation. Some tests that involve concurrent operations are currently skipped due to stability issues that will be addressed in future updates.
 
-### Running Tests
+### Running Unit Tests
 
 Run all tests with Go's test command, skipping known problematic tests:
 
@@ -55,6 +55,29 @@ For more detailed output:
 ```bash
 go test -v ./... -skip "TestXHRTransportConnectComprehensive|TestXHRTransportThreadSafety|TestXHRTransportConnect"
 ```
+
+### Integration Testing
+
+While unit tests verify individual components in isolation, integration tests validate that the client works correctly with real SockJS servers.
+
+To run the integration test:
+
+1. Start the test server:
+```bash
+cd cmd/integration_test
+npm install sockjs colors
+node server.js
+```
+
+2. In another terminal, run the client:
+```bash
+cd cmd/integration_test
+go run main.go
+```
+
+The integration test verifies that the polling mechanism works correctly when connecting to an actual SockJS server, sending messages, and receiving responses.
+
+See [cmd/integration_test/README.md](cmd/integration_test/README.md) for more details.
 
 ### Safe Test Execution
 
