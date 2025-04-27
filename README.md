@@ -40,20 +40,20 @@ MIT
 
 ## Testing
 
-The project includes comprehensive tests for the SockJS client implementation. Some tests that involve concurrent operations are currently skipped due to stability issues that will be addressed in future updates.
+The project includes comprehensive tests for the SockJS client implementation.
 
 ### Running Unit Tests
 
-Run all tests with Go's test command, skipping known problematic tests:
+Run all tests with Go's test command:
 
 ```bash
-go test ./... -skip "TestXHRTransportConnectComprehensive|TestXHRTransportThreadSafety|TestXHRTransportConnect"
+go test ./...
 ```
 
 For more detailed output:
 
 ```bash
-go test -v ./... -skip "TestXHRTransportConnectComprehensive|TestXHRTransportThreadSafety|TestXHRTransportConnect"
+go test -v ./...
 ```
 
 ### Integration Testing
@@ -62,20 +62,23 @@ While unit tests verify individual components in isolation, integration tests va
 
 To run the integration test:
 
-1. Start the test server:
 ```bash
 cd cmd/integration_test
-npm install sockjs colors
-node server.js
+./run_test.sh
 ```
 
-2. In another terminal, run the client:
+This script will:
+1. Start a SockJS test server
+2. Run the client test against it
+3. Clean up resources when done
+
+You can specify which transport to test:
 ```bash
-cd cmd/integration_test
-go run main.go
+./run_test.sh --transport=websocket  # Test WebSocket transport
+./run_test.sh --transport=xhr        # Test XHR transport
 ```
 
-The integration test verifies that the polling mechanism works correctly when connecting to an actual SockJS server, sending messages, and receiving responses.
+The integration test verifies that the client works correctly when connecting to an actual SockJS server, sending messages, and receiving responses.
 
 See [cmd/integration_test/README.md](cmd/integration_test/README.md) for more details.
 
@@ -96,14 +99,4 @@ You can also run all tests at once with a single timeout:
 ./run_tests.sh --all
 ```
 
-This command runs the entire test suite with a 30-second timeout, automatically skipping known problematic tests. This is the recommended approach for CI environments or quick checks during development.
-
-### Known Issues
-
-The following tests are currently skipped and will be fixed in upcoming updates:
-
-1. `TestXHRTransportConnect` - Known issue with concurrency that needs deeper investigation
-2. `TestXHRTransportThreadSafety` - Concurrent map access issues
-3. `TestXHRTransportConnectComprehensive` - Timeout issues that need more investigation
-
-These tests validate edge cases in concurrency handling and will be reimplemented with a more stable approach. 
+This command runs the entire test suite with a 30-second timeout. This is the recommended approach for CI environments or quick checks during development. 
