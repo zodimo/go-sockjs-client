@@ -2,145 +2,146 @@
 
 ## Project Overview
 
-- This is a Go-based demo project following standard Go project organization and practices
-- Tech stack: Go language with standard library and approved third-party dependencies
-- All code must be well-tested, maintainable, and follow Go idioms and best practices
+- A Go client implementation of the SockJS protocol
+- Provides functionality to connect to SockJS servers using various transport mechanisms (WebSocket, XHR)
+- Go version 1.20 with minimal dependencies (gorilla/websocket, golang.org/x/net)
+- Repository: github.com/zodimo/go-sockjs-client
 
 ## Project Architecture
 
 ### Directory Structure
 
-- `/cmd/` - Main applications for this project, directory name should match executable name
-- `/internal/` - Private application and library code not meant to be used by external applications
-- `/pkg/` - Library code that's safe to use by external applications
-- `/api/` - API protocol definitions, OpenAPI/Swagger specs, JSON schema files, etc.
-- `/web/` - Web application specific components: static web assets, server side templates, SPAs
-- `/configs/` - Configuration file templates or default configs
-- `/test/` - Additional external test apps and test data
-- `/docs/` - Design and user documents
+- `/pkg/sockjs/` - Core client implementation (client, session, framing)
+- `/pkg/sockjs/transport/` - Transport interface and implementations
+- `/cmd/integration_test/` - Integration testing with Node.js server
+- Root level scripts for testing (run_tests.sh)
 
 ### Module Management
 
-- Maintain a clean `go.mod` file with explicit versioning for all dependencies
-- Avoid dependency conflicts by carefully managing module requirements
-- Document any non-standard dependency in comments within `go.mod`
+- Maintain Go 1.20 compatibility
+- Explicitly version all dependencies in go.mod
+- Minimize external dependencies - only use when necessary
+- Current dependencies:
+  - github.com/gorilla/websocket v1.5.3 - For WebSocket transport
+  - golang.org/x/net v0.17.0 - For HTTP functionality
 
 ## Coding Standards
 
+### Design Patterns
+
+- **Interface-based design** - Define interfaces before implementations
+- **Functional options pattern** - Use for configuration (see transport.Option)
+- **Versioned structs** - Use V2 suffix for updated implementations (ClientV2, SessionV2)
+- **Context-based APIs** - All network operations must accept context for cancellation
+
 ### Naming Conventions
 
-- Use camelCase for private variables, function names, and method names
-- Use PascalCase for exported variables, function names, method names, and struct fields
-- Use snake_case for file names and directory names
-- Abbreviations should be consistent in their case (e.g., `URL`, not `Url`)
-
-### Formatting
-
-- Always run `gofmt` or `goimports` on code before committing
-- Line length should be reasonable (aim for < 100 characters)
-- Group imports in the standard Go way (standard library, third-party, project imports)
+- Interface names should be clear without "Interface" suffix (e.g., Transport)
+- Implementation types should indicate their concrete type (e.g., WebSocketTransport)
+- Option functions should use With prefix (e.g., WithReconnect)
+- Default constants should use default prefix (e.g., defaultConnectTimeout)
 
 ### Error Handling
 
-- Always check errors explicitly
-- Return errors rather than using panic
-- Use custom error types for specific error conditions where appropriate
-- Wrap errors with context using `fmt.Errorf("context: %w", err)` or equivalent
+- Return explicit, descriptive errors rather than using panic
+- Use fmt.Errorf with %w for error wrapping
+- Check all errors from external calls
+- Propagate transport-specific errors through appropriate handlers
 
-### Comments and Documentation
+### Concurrency
 
-- All exported functions must have a proper documentation comment
-- Complex logic should be explained with inline comments
-- Use `// TODO:` or `// FIXME:` prefixes for temporary solutions or known issues
+- Protect shared state with mutex (sync.Mutex/sync.RWMutex)
+- Use channels for signaling (e.g., closed channel pattern)
+- Every concurrent operation must be thread-safe
+
+### Documentation
+
+- All exported types and functions must have descriptive comments
+- Comments should explain parameter usage and return values
+- Configuration options must be clearly documented
 
 ## Feature Implementation Guidelines
 
-### Development Process
+### Transport System
 
-- For new features, first define interfaces and tests before implementation
-- Ensure backward compatibility when modifying existing features
-- Create small, focused PRs that are easy to review
+- Each transport must implement the `transport.Transport` interface
+- New transport types must be added to the transport type list in client.go
+- Transport connection failures must return descriptive errors
+- Follow existing patterns in WebSocketTransport and XHRTransport
 
-### Testing
+### Client Configuration
 
-- Write unit tests for all functions and methods
-- Integration tests should cover critical system interactions
-- Test files should be named with `_test.go` suffix
-- Aim for high test coverage particularly in core functionality
+- Use `ClientConfig` struct for configuration
+- Provide sensible defaults for all configuration options
+- Validate required configuration fields (e.g., ServerURL)
 
-## Third-Party Library Usage
+### Session Management
 
-### Dependency Management
+- Sessions must track their state (Open, Closing, Closed)
+- All session operations must be thread-safe
+- Support handler registration for messages, errors, and close events
 
-- Only add dependencies when absolutely necessary
-- Prefer standard library solutions when available
-- All dependencies must be added to `go.mod` with explicit versioning
-- Document why a dependency is needed in commit messages
+## Testing Requirements
 
-### Approved Libraries
+### Unit Testing
 
-- For HTTP: `net/http` (standard library) or `gorilla/mux`
-- For database: `database/sql` with appropriate drivers
-- For configuration: `viper` or similar configuration management library
-- For CLI applications: `cobra` or similar command-line interface library
+- Each file should have a corresponding _test.go file
+- Test all exported functions and methods
+- Use table-driven tests for comprehensive test cases
+- Test happy paths and error conditions
 
-## Workflow Standards
+### Integration Testing
 
-### Git Practices
+- Use cmd/integration_test for testing against a real SockJS server
+- Integration tests must verify cross-compatibility with Node.js SockJS
+- Test all supported transports (WebSocket, XHR)
 
-- Use feature branches for all changes
-- Commit messages should be clear and descriptive
-- Rebase feature branches against main before merge
-- Delete branches after merge
+### Test Execution
 
-### Checkpointing and Safe State
-
-- Create regular, restorable checkpoints in git history by making atomic, self-contained commits and after completion of a task
-- Ensure each commit and PR leaves the repository in a buildable and testable state
-- Use descriptive PR titles and commit messages to clarify the purpose of each checkpoint
-- Tag significant milestones or releases with annotated git tags
-
-### Code Review
-
-- All code must be reviewed before merging
-- Address all comments before merging
-- Ensure tests pass before requesting review
-- Maintainers should enforce code quality standards
+- Use run_tests.sh script for safe test execution
+- Set appropriate timeouts to prevent hanging tests
+- Track test coverage with coverage.out files
 
 ## Key File Interactions
 
-### Configuration Management
+### Core Components
 
-- Configuration changes in `/configs/` require corresponding updates in application code
-- New configuration options must be documented
+- **client.go** - Client implementation and connection establishment
+- **sockjs.go** - Session interface and implementation
+- **frame.go** - Protocol framing and message handling
+- **transport/transport.go** - Transport interface and options
+- **transport/websocket.go** - WebSocket transport implementation
+- **transport/xhr.go** - XHR transport implementation
 
-### API Changes
+### Cross-File Dependencies
 
-- API changes in `/api/` require corresponding updates in handler implementations
-- API changes must maintain backward compatibility when possible
+- Any changes to the Transport interface require updating all transport implementations
+- Changes to session handling in client.go may require updates to sockjs.go
+- Option functions in transport.go must handle all implemented transport types
 
 ## AI Decision Guidelines
 
-### Code Modification Priority
+### Implementation Priority
 
-1. Correctness - Code must work correctly
-2. Readability - Code should be easy to understand
-3. Maintainability - Code should be easy to maintain
-4. Performance - Code should be efficient
+1. **Correctness** - Adhere to SockJS protocol specification
+2. **Robustness** - Handle network errors, reconnection, and edge cases
+3. **Extensibility** - Maintain pluggable transport architecture
+4. **Performance** - Optimize for efficient connection handling and messaging
 
 ### Decision Making Process
 
-- When encountering ambiguity, follow existing patterns in the codebase
-- When adding new code, follow Go idioms and standard practices
-- When optimizing, prioritize readability unless performance is critical
+- Follow existing patterns and conventions in the codebase
+- Prioritize backward compatibility when modifying interfaces
+- When adding features, consider all transport implementations
+- Reference SockJS protocol documentation for protocol-specific details
 
 ## Prohibitions
 
-- DO NOT use global variables for application state
-- DO NOT ignore errors
-- DO NOT use panic/recover as flow control
-- DO NOT write overly complex functions (follow single responsibility principle)
-- DO NOT hardcode configuration values, use configuration files instead
-- DO NOT use deprecated libraries or functions
-- DO NOT commit directly to main branch
-- DO NOT add dependencies without justification
+- DO NOT add transports without implementing the full Transport interface
+- DO NOT use global state - all state should be contained in struct fields
+- DO NOT bypass the context parameter - it must be honored for cancellation
+- DO NOT hardcode timeouts - use configuration parameters
+- DO NOT implement protocol variations without documentation
+- DO NOT modify the public API without version changes
+- DO NOT ignore thread safety in client/session operations
+- DO NOT add dependencies beyond the minimal set required
