@@ -134,15 +134,16 @@ func (x *XHRTransport) Connect(ctx context.Context) error {
 
 // startPolling begins the XHR polling process.
 func (x *XHRTransport) startPolling(ctx context.Context) {
+	// Create a cancelable context for polling
+	pollCtx, cancel := context.WithCancel(ctx)
+
 	x.mutex.Lock()
 	if x.polling {
 		x.mutex.Unlock()
+		cancel() // Cancel the new context since we're not using it
 		return
 	}
 	x.polling = true
-
-	// Create a cancelable context for polling
-	pollCtx, cancel := context.WithCancel(context.Background())
 	x.pollCancel = cancel
 	x.mutex.Unlock()
 
@@ -157,19 +158,34 @@ func (x *XHRTransport) startPolling(ctx context.Context) {
 				err := x.poll(pollCtx)
 				if err != nil {
 					x.mutex.Lock()
-					if x.errorHandler != nil {
-						x.errorHandler(err)
-					}
+					errHandler := x.errorHandler // Get the handler while holding the mutex
 					x.mutex.Unlock()
 
+					if errHandler != nil {
+						errHandler(err)
+					}
+
 					// If we're disconnected, stop polling
-					if errors.Is(err, context.Canceled) || !x.connected {
+					if errors.Is(err, context.Canceled) {
+						return
+					}
+
+					x.mutex.Lock()
+					connected := x.connected
+					x.mutex.Unlock()
+
+					if !connected {
 						return
 					}
 				}
 
 				// Sleep briefly before the next poll to avoid hammering the server
-				time.Sleep(x.pollInterval)
+				select {
+				case <-pollCtx.Done():
+					return
+				case <-time.After(x.pollInterval):
+					// Continue polling
+				}
 			}
 		}
 	}()
@@ -226,16 +242,15 @@ func (x *XHRTransport) poll(ctx context.Context) error {
 
 // handleMessage processes a raw message frame from the SockJS server.
 func (x *XHRTransport) handleMessage(data string) {
-	x.mutex.Lock()
-	defer x.mutex.Unlock()
-
-	if !x.connected || x.messageHandler == nil {
+	// Check for heartbeat frame first (most common case)
+	if data == "h" {
+		// Heartbeat - nothing to do
 		return
 	}
 
-	// Check for heartbeat frame
-	if data == "h" {
-		// Heartbeat - nothing to do
+	x.mutex.Lock()
+	if !x.connected || x.messageHandler == nil {
+		x.mutex.Unlock()
 		return
 	}
 
@@ -244,8 +259,11 @@ func (x *XHRTransport) handleMessage(data string) {
 		// Close frame, format: c[code, "reason"]
 		var closeFrame []interface{}
 		if err := json.Unmarshal([]byte(data[1:]), &closeFrame); err != nil {
-			if x.errorHandler != nil {
-				x.errorHandler(fmt.Errorf("failed to unmarshal close frame: %w", err))
+			errorHandler := x.errorHandler
+			x.mutex.Unlock()
+
+			if errorHandler != nil {
+				errorHandler(fmt.Errorf("failed to unmarshal close frame: %w", err))
 			}
 			return
 		}
@@ -264,17 +282,31 @@ func (x *XHRTransport) handleMessage(data string) {
 			// Mark as disconnected before calling handler
 			x.connected = false
 
-			// Call close handler
-			if x.closeHandler != nil {
-				x.closeHandler(code, reason)
-			}
+			// Capture handlers and cancel function
+			closeHandler := x.closeHandler
+			cancelFunc := x.pollCancel
 
-			// Stop polling
-			if x.pollCancel != nil {
-				x.pollCancel()
+			// Clear state
+			if cancelFunc != nil {
+				x.pollCancel = nil
 				x.polling = false
 			}
+
+			x.mutex.Unlock()
+
+			// Call close handler outside mutex
+			if closeHandler != nil {
+				closeHandler(code, reason)
+			}
+
+			// Stop polling outside mutex
+			if cancelFunc != nil {
+				cancelFunc()
+			}
+
+			return
 		}
+		x.mutex.Unlock()
 		return
 	}
 
@@ -283,22 +315,32 @@ func (x *XHRTransport) handleMessage(data string) {
 		// Array frame, format: a["message1","message2",...]
 		var messages []string
 		if err := json.Unmarshal([]byte(data[1:]), &messages); err != nil {
-			if x.errorHandler != nil {
-				x.errorHandler(fmt.Errorf("failed to unmarshal message array: %w", err))
+			errorHandler := x.errorHandler
+			x.mutex.Unlock()
+
+			if errorHandler != nil {
+				errorHandler(fmt.Errorf("failed to unmarshal message array: %w", err))
 			}
 			return
 		}
 
-		// Process each message
+		// Get message handler while holding lock
+		messageHandler := x.messageHandler
+		x.mutex.Unlock()
+
+		// Process each message outside the lock
 		for _, msg := range messages {
-			x.messageHandler(msg)
+			messageHandler(msg)
 		}
 		return
 	}
 
 	// Unrecognized message format
-	if x.errorHandler != nil {
-		x.errorHandler(fmt.Errorf("unrecognized message format: %s", data))
+	errorHandler := x.errorHandler
+	x.mutex.Unlock()
+
+	if errorHandler != nil {
+		errorHandler(fmt.Errorf("unrecognized message format: %s", data))
 	}
 }
 
@@ -351,26 +393,30 @@ func (x *XHRTransport) Send(ctx context.Context, data string) error {
 
 // Close terminates the XHR connection.
 func (x *XHRTransport) Close(ctx context.Context, code int, reason string) error {
+	// Get what we need under lock
 	x.mutex.Lock()
-	defer x.mutex.Unlock()
-
 	if !x.connected {
+		x.mutex.Unlock()
 		return nil // Already closed
 	}
 
-	// Mark as disconnected
+	// Mark as disconnected and capture what we need
 	x.connected = false
+	cancelFunc := x.pollCancel
+	closeHandler := x.closeHandler
+	x.pollCancel = nil
+	x.polling = false
+	x.mutex.Unlock()
 
-	// Stop polling
-	if x.pollCancel != nil {
-		x.pollCancel()
-		x.polling = false
+	// Stop polling - do this outside the mutex lock
+	if cancelFunc != nil {
+		cancelFunc()
 	}
 
 	// No explicit close message is required as the server will detect connection loss,
 	// but we'll notify our local close handler
-	if x.closeHandler != nil {
-		x.closeHandler(code, reason)
+	if closeHandler != nil {
+		closeHandler(code, reason)
 	}
 
 	return nil

@@ -69,6 +69,10 @@ func WithReconnect(config ReconnectConfig) Option {
 			wt.reconnectCfg = config
 		}
 		// Add other transport types here as they're implemented
+		if _, ok := t.(*XHRTransport); ok {
+			// We're not using reconnectCfg for XHR yet, but could add it in the future
+			// For now, just record that it was set for future implementation
+		}
 	}
 }
 
@@ -79,5 +83,9 @@ func WithConnectTimeout(timeout time.Duration) Option {
 			wt.connectTimeout = timeout
 		}
 		// Add other transport types here as they're implemented
+		if xt, ok := t.(*XHRTransport); ok {
+			// Update client timeout for XHR
+			xt.client.Timeout = timeout
+		}
 	}
 }
